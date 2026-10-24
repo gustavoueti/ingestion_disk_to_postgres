@@ -1,6 +1,6 @@
 [project]
 name = "ingestion_disk_to_postgres"
-version = "0.2.0"
+version = "0.3.0"
 description = "Loads the CSV files of a public dataset from a local directory into a PostgreSQL table, appending only the files above its watermark."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -54,8 +54,9 @@ convention = "google"
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-# The job is not a package: its modules are imported from the repository root.
-pythonpath = ["."]
+# The job is not a package: its modules are plain files that the tests import by name from
+# src/ (main, warehouse) and scripts/ (prepare_landing).
+pythonpath = ["src", "scripts"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "integration: tests that touch an external resource (network, Docker, Spark)",

@@ -17,6 +17,7 @@ services:
   spark:
     build: .
     user: "1000:1000"
+    working_dir: /app
     init: true
     depends_on:
       postgres:
@@ -29,5 +30,6 @@ services:
       PGDATABASE: postgres
     volumes:
       - ./data:/data
-    # It runs no job on start: the preparation script and the job run in it with `exec`.
+    # It runs no job on start: `python scripts/prepare_landing.py` and `python src/main.py` run in it
+    # with `exec`, from /app.
     command: ["sleep", "infinity"]

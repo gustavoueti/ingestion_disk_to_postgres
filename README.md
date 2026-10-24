@@ -35,6 +35,19 @@ name of its file, and appends the batch in one transaction. The watermark is the
 `source_file` in the table itself, so it commits with the rows. Details are in
 [docs/camara_hourly_ingestion.md](docs/camara_hourly_ingestion.md).
 
+## The layout of the job
+
+| Path | What it is |
+|---|---|
+| `src/main.py` | The entry point of the ingestio job. It defines the job's own callbacks, `SkipEmptyBatch` and `StampSourceFile`. |
+| `src/config.json` | The job's configuration. |
+| `src/warehouse.py` | The job's helper: the values it reads from the configuration, the target's DDL and the watermark query. |
+| `scripts/prepare_landing.py` | The preparation script that lays out the landing directory. It is not part of the ingestio job. |
+| `data/` | The landing, mounted at `/data` in the `spark` service. Never committed. |
+
+There is no `callbacks.py`, and the root of the repository holds none of these files. In the
+`spark` image they sit under `/app/src` and `/app/scripts`.
+
 ## Prerequisites
 
 - Docker with `docker compose`.
@@ -62,13 +75,16 @@ field in `"` and records ended by `\n`.
 
 ```bash
 docker compose up --build --wait
-docker compose exec spark python prepare_landing.py --landing /data/landing/votacoes --start 2024-01-01T00 --end 2025-12-31T23
-docker compose exec spark python main.py
+docker compose exec spark python scripts/prepare_landing.py --landing /data/landing/votacoes --start 2024-01-01T00 --end 2025-12-31T23
+docker compose exec spark python src/main.py
 docker compose exec postgres psql -U postgres -c "SELECT count(*), max(source_file) FROM camara.votacoes"
-docker compose exec spark python prepare_landing.py --landing /data/landing/votacoes --start 2026-01-01T00 --end 2026-01-31T23
-docker compose exec spark python main.py
+docker compose exec spark python scripts/prepare_landing.py --landing /data/landing/votacoes --start 2026-01-01T00 --end 2026-01-31T23
+docker compose exec spark python src/main.py
 docker compose down --volumes
 ```
+
+The `spark` service works from `/app`, which mirrors the repository, so the commands use the
+same paths as the repository does.
 
 1. **Bring the environment up.** Builds the `spark` image and starts the `spark` and `postgres`
    services, returning once PostgreSQL is healthy. It shows the build and the containers

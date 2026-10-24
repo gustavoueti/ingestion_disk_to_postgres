@@ -6,6 +6,21 @@ created by the maintainer.
 
 <!-- version list -->
 
+## v0.3.0 (2026-10-24)
+
+- Breaking: the layout of the job changes, and with it the commands that run it.
+  [camara_hourly_ingestion](specs/camara_hourly_ingestion.md) is run with
+  `docker compose exec spark python src/main.py` and
+  `docker compose exec spark python scripts/prepare_landing.py ...`; `python main.py` and
+  `python prepare_landing.py` no longer exist.
+- `main.py`, `config.json` and `warehouse.py` moved to `src/`.
+- The job's own callbacks, `SkipEmptyBatch` and `StampSourceFile`, are now defined in
+  `src/main.py`, and `callbacks.py` is gone.
+- The preparation script moved to `scripts/prepare_landing.py`.
+- The `spark` service works from `/app`, which mirrors the repository.
+- Behaviour is unchanged: the process, the configuration, the table, the landing, the
+  watermark, the log and the exit codes are those of v0.2.0.
+
 ## v0.2.0 (2026-10-24)
 
 - First process, [camara_hourly_ingestion](specs/camara_hourly_ingestion.md): hourly CSV files

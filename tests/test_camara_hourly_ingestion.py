@@ -1,39 +1,56 @@
 """Tests of the Câmara's hourly ingestion, the spec `specs/camara_hourly_ingestion.md`.
 
 Each test is named after the acceptance criterion it covers. "The job runs" is, as the spec
-defines it, `main.run_job` on a copy of the job's `config.json`, written under `tmp_path` with a
-landing directory and a schema of the test's own, and the connection to the PostgreSQL of the
-environment.
+defines it, `main.run_job` of `src/main.py` on a copy of the job's `src/config.json`, written
+under `tmp_path` with a landing directory and a schema of the test's own, and the connection to
+the PostgreSQL of the environment. "The preparation script runs" is `prepare_landing.main` of
+`scripts/prepare_landing.py`. The tests import `main`, `warehouse` and `prepare_landing` by
+those names, from `src/` and `scripts/`, the directories of pytest's `pythonpath`.
 
 Every row is synthetic: the tests invent the ids, the texts, the organs and the URIs, under
 `example.org`, and write the landing files and the Câmara's yearly files themselves. No row of
 the dataset is used.
 
 AT-001 to AT-012 need Spark and PostgreSQL, and AT-021 the Docker CLI: they are integration
-tests, which fail rather than skip when what they need is missing.
+tests, which fail rather than skip when what they need is missing. AT-013 to AT-020 and AT-022
+to AT-028 need neither: AT-015 builds the library's callbacks, which touches nothing, and AT-026
+and AT-027 run the commands of the README as child processes from the repository's root, where
+`python src/main.py` imports pyspark but starts no session.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import Any, LiteralString
 
 import psycopg
 import pytest
-from ingestio import AppendOnly, Process, ReadSource
+from ingestio import AppendOnly, Callback, Process, ReadSource
 from ingestio.connector.all import PostgresConnection
 from psycopg import sql
 from psycopg.rows import dict_row
 
 ROOT = Path(__file__).resolve().parents[1]
-JOB_CONFIG = ROOT / "config.json"
+JOB_CONFIG = ROOT / "src" / "config.json"
+
+# Where each module of the job lives, relative to the repository's root (Configuration, The layout
+# of the job), and the files that the root no longer holds since that layout.
+JOB_MODULES = {
+    "main": "src/main.py",
+    "warehouse": "src/warehouse.py",
+    "prepare_landing": "scripts/prepare_landing.py",
+}
+ROOT_LAYOUT_FILES = ("main.py", "config.json", "warehouse.py", "callbacks.py", "prepare_landing.py")
 
 # The twenty columns: the Câmara's name, the landing's and the target's name, and the target's
 # type as information_schema names it (Configuration, The landing directory and its files).
@@ -126,16 +143,19 @@ TARGET_DEFINITION: list[tuple[str, str, str, str | None, str | None]] = [
 # The commands of AT-022, in their order.
 README_COMMANDS = (
     "docker compose up --build --wait",
-    "docker compose exec spark python prepare_landing.py --landing /data/landing/votacoes "
+    "docker compose exec spark python scripts/prepare_landing.py --landing /data/landing/votacoes "
     "--start 2024-01-01T00 --end 2025-12-31T23",
-    "docker compose exec spark python main.py",
+    "docker compose exec spark python src/main.py",
     'docker compose exec postgres psql -U postgres -c "SELECT count(*), max(source_file) '
     'FROM camara.votacoes"',
-    "docker compose exec spark python prepare_landing.py --landing /data/landing/votacoes "
+    "docker compose exec spark python scripts/prepare_landing.py --landing /data/landing/votacoes "
     "--start 2026-01-01T00 --end 2026-01-31T23",
-    "docker compose exec spark python main.py",
+    "docker compose exec spark python src/main.py",
     "docker compose down --volumes",
 )
+
+# The commands of 0.2.0, which ran the files of the root, and which the README no longer holds.
+ROOT_LAYOUT_COMMANDS = ("python main.py", "python prepare_landing.py")
 
 # The ways a landing file is broken in AT-008 and AT-009.
 LANDING_BREAKAGES = ("votos_sim_abc", "twenty_one_fields", "camara_header")
@@ -315,10 +335,20 @@ def _stored(row: Mapping[str, str]) -> dict[str, object]:
 # --- The job, PostgreSQL and the log --------------------------------------------------------
 
 
+def _assert_is_the_job_module(module: ModuleType) -> None:
+    """Checks that a module of the job, imported by its name, is the file the layout gives it."""
+    assert module.__file__ is not None, f"the module {module.__name__} has no file"
+    expected = ROOT / JOB_MODULES[module.__name__]
+    assert Path(module.__file__).resolve() == expected, (
+        f"the module {module.__name__} is {module.__file__}, not {expected}"
+    )
+
+
 def _run_job(config: Path, connection: PostgresConnection) -> Process:
-    """Runs the job as the criteria define it."""
+    """Runs the job as the criteria define it: `main.run_job`, of `src/main.py`."""
     import main
 
+    _assert_is_the_job_module(main)
     return main.run_job(config, connection=connection)
 
 
@@ -334,9 +364,13 @@ def _assert_run_fails(config: Path, connection: PostgresConnection) -> None:
 
 
 def _prepare(landing: Path, sources: Path, start: str, end: str) -> int:
-    """Runs the preparation script on the yearly files of `sources`, named as a `file:` URL."""
+    """Runs the preparation script on the yearly files of `sources`, named as a `file:` URL.
+
+    The script is `prepare_landing.main`, of `scripts/prepare_landing.py`, as the criteria say.
+    """
     import prepare_landing
 
+    _assert_is_the_job_module(prepare_landing)
     return prepare_landing.main(
         [
             "--landing",
@@ -467,7 +501,10 @@ def sources(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def job_config(tmp_path: Path, landing: Path, target_schema: str) -> Path:
-    """The job's `config.json`, with the test's landing directory and a table of its own schema."""
+    """The job's `src/config.json`, with the test's landing directory and a table of its own schema.
+
+    Its `schema` and `options` are the job's own, so that the test runs the real configuration.
+    """
     config = json.loads(JOB_CONFIG.read_text(encoding="utf-8"))
     config["source"]["path"] = str(landing)
     config["target"]["table_name"] = f"{target_schema}.votacoes"
@@ -906,6 +943,7 @@ ENVIRONMENT = {
     "PGPASSWORD": "throwaway",
     "PGDATABASE": "warehouse",
 }
+LIBPQ_VARIABLES = tuple(ENVIRONMENT)
 
 
 def test_at013_the_connection_takes_every_setting_from_the_environment() -> None:
@@ -1146,6 +1184,7 @@ def test_at021_the_compose_file_describes_the_postgres_and_the_spark_services() 
 
     spark = services["spark"]
     assert Path(spark["build"]["context"]).resolve() == ROOT
+    assert spark.get("working_dir") == "/app"
     assert [
         (volume["type"], Path(volume["source"]).resolve(), volume["target"])
         for volume in spark["volumes"]
@@ -1170,3 +1209,176 @@ def test_at022_the_readme_holds_the_commands_of_the_environment_and_the_job_in_o
         found = readme.find(command, position)
         assert found >= 0, f"README.md lacks, after the commands before it: {command}"
         position = found + len(command)
+
+
+def test_at022_the_readme_holds_neither_command_of_the_files_at_the_root() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert [command for command in ROOT_LAYOUT_COMMANDS if command in readme] == []
+
+
+# --- The layout of the job ------------------------------------------------------------------
+
+
+def _child_environment(**variables: str) -> dict[str, str]:
+    """The environment of a command the test runs: this one's, with these libpq variables only.
+
+    It drops `PYTHONPATH` too, so that the command finds the job's modules as it does in the
+    `spark` service: through the directory of the script it runs.
+    """
+    dropped = {"PYTHONPATH", *LIBPQ_VARIABLES}
+    inherited = {name: value for name, value in os.environ.items() if name not in dropped}
+    return inherited | variables
+
+
+def _image_layout(
+    dockerfile: str,
+) -> tuple[PurePosixPath, list[tuple[PurePosixPath, PurePosixPath]]]:
+    """The last `WORKDIR` of a Dockerfile, and what its `COPY` instructions take from the context.
+
+    It joins the lines that end with `\\`, drops the comments, and reads the `WORKDIR` and `COPY`
+    instructions in order. It skips the `COPY --from=...` instructions, which copy from another
+    image, and the options of the others, such as `--chown`. Each source of a `COPY` comes with
+    its destination, resolved against the `WORKDIR` before it; the paths are normalised, so that
+    trailing slashes and a leading `./` do not count.
+
+    Returns:
+        The working directory, and a pair of a source in the build context and its destination
+        in the image for every source of every `COPY`.
+    """
+    instructions: list[str] = []
+    pending = ""
+    for line in dockerfile.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or (not stripped and pending):
+            continue
+        if stripped.endswith("\\"):
+            pending += stripped[:-1] + " "
+            continue
+        instructions.append(pending + stripped)
+        pending = ""
+    instructions.append(pending)
+
+    workdir = PurePosixPath("/")
+    copies: list[tuple[PurePosixPath, PurePosixPath]] = []
+    for instruction in instructions:
+        words = instruction.split(maxsplit=1)
+        if not words:
+            continue
+        keyword, arguments = words[0].upper(), (words[1] if len(words) > 1 else "")
+        if keyword == "WORKDIR":
+            workdir = workdir / arguments.strip()
+        elif keyword == "COPY":
+            found = re.fullmatch(r"((?:--\S+\s+)*)(.+)", arguments.strip(), re.DOTALL)
+            assert found is not None, f"a COPY without sources: {instruction}"
+            options, paths = found.group(1).split(), found.group(2)
+            if any(option.startswith("--from=") for option in options):
+                continue
+            *names, destination = json.loads(paths) if paths.startswith("[") else paths.split()
+            copies.extend((PurePosixPath(name), workdir / destination) for name in names)
+    return workdir, copies
+
+
+def test_at023_src_holds_the_job_and_scripts_holds_the_preparation_script() -> None:
+    expected = ("src/main.py", "src/config.json", "src/warehouse.py", "scripts/prepare_landing.py")
+
+    assert [file for file in expected if not (ROOT / file).is_file()] == []
+
+
+@pytest.mark.parametrize("name", sorted(JOB_MODULES))
+def test_at023_the_modules_the_tests_import_by_name_are_the_files_of_src_and_scripts(
+    name: str,
+) -> None:
+    module = importlib.import_module(name)
+
+    _assert_is_the_job_module(module)
+
+
+def test_at024_no_module_of_callbacks_exists_anywhere_in_the_repository() -> None:
+    found: list[Path] = []
+    for directory, subdirectories, files in ROOT.walk():
+        # Hidden directories (.venv, .git, .claude, the tool caches) and the landing are not the
+        # repository's code.
+        subdirectories[:] = [
+            name
+            for name in subdirectories
+            if not name.startswith(".") and not (directory == ROOT and name == "data")
+        ]
+        found.extend(directory / name for name in files if name == "callbacks.py")
+
+    assert found == []
+
+
+def test_at024_the_root_holds_none_of_the_files_it_held_before_the_layout_of_src() -> None:
+    assert [name for name in ROOT_LAYOUT_FILES if (ROOT / name).exists()] == []
+
+
+@pytest.mark.parametrize("name", ["SkipEmptyBatch", "StampSourceFile"])
+def test_at025_the_job_callbacks_are_defined_in_main_itself(name: str) -> None:
+    import main
+
+    callback = getattr(main, name)
+
+    assert isinstance(callback, type)
+    assert issubclass(callback, Callback)
+    assert callback.__module__ == "main"
+
+
+def test_at026_python_src_main_py_from_the_root_fails_without_pghost() -> None:
+    without_pghost = {name: value for name, value in ENVIRONMENT.items() if name != "PGHOST"}
+
+    result = subprocess.run(
+        [sys.executable, "src/main.py"],
+        cwd=ROOT,
+        env=_child_environment(**without_pghost),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "ValueError: PGHOST is not set" in result.stderr, result.stderr
+
+
+def test_at027_python_scripts_prepare_landing_py_from_the_root_lays_out_the_landing(
+    tmp_path: Path, sources: Path
+) -> None:
+    _write_yearly_file(sources, 2024, [_row("9002701-1", "2024-02-06T18:35:59")])
+    landing = tmp_path / "new_landing"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/prepare_landing.py",
+            "--landing",
+            str(landing),
+            "--start",
+            "2024-02-06T18",
+            "--end",
+            "2024-02-06T18",
+            "--base-url",
+            sources.as_uri(),
+        ],
+        cwd=ROOT,
+        env=_child_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.name for path in landing.iterdir()) == ["votacoes_2024020618.csv"]
+
+
+def test_at028_the_image_works_from_app_and_holds_src_and_scripts_under_it() -> None:
+    workdir, copies = _image_layout((ROOT / "Dockerfile").read_text(encoding="utf-8"))
+
+    assert workdir == PurePosixPath("/app")
+    assert (PurePosixPath("src"), PurePosixPath("/app/src")) in copies, copies
+    assert (PurePosixPath("scripts"), PurePosixPath("/app/scripts")) in copies, copies
+
+
+def test_at028_the_image_copies_none_of_the_files_of_the_root_layout() -> None:
+    _, copies = _image_layout((ROOT / "Dockerfile").read_text(encoding="utf-8"))
+
+    assert [str(source) for source, _ in copies if str(source) in ROOT_LAYOUT_FILES] == []

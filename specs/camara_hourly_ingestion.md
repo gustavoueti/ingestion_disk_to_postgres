@@ -2,9 +2,10 @@
 
 - **Status:** validated
 - **Slug:** `camara_hourly_ingestion`. The spec is `specs/camara_hourly_ingestion.md` and its tests are `tests/test_camara_hourly_ingestion.py`.
-- **Version:** `0.2.0`
-- **Related:** `LIB_GAPS.md`: the gap proposed under **Library gaps** (GAP-001, a landing laid out
-  in year/month/day folders cannot be read). Open questions Q1 to Q8 below.
+- **Version:** `0.3.0`, the layout of D15 (`0.2.0` was the first process)
+- **Related:** `LIB_GAPS.md`: GAP-001 (a landing laid out in year/month/day folders cannot be
+  read), from **Library gaps** below. Open questions Q1 to Q8 below, answered. The maintainer's
+  definitions of 2026-10-24 for the layout of `0.3.0`: D15.
 
 <!--
 Status values, in order: draft → approved → tested → documented → implemented → validated.
@@ -14,15 +15,25 @@ updates the status and the History; the stages report to it. See docs/workflow.m
 
 ## Summary
 
-The job's first process. A preparation script of the job's own downloads the yearly CSV files
-of the *Votações* dataset of the Câmara dos Deputados and lays out, as a prerequisite, a flat
-landing directory with one CSV file per hour that has data, named after that hour
-(`votacoes_YYYYMMDDHH.csv`), for two years of history. The ingestio process then reads with
-`ReadSource`, on the `disk` system, only the files above the watermark kept in the target's own
-rows, stamps every row with the name of its file, and appends the batch with `AppendOnly` to
-`camara.votacoes` in PostgreSQL, in one transaction. Everything runs in two `docker compose`
-services, `spark` (the job's image, where the landing directory is mounted and the script and
-the job run) and `postgres`, and the README documents how to bring them up and run the job.
+The job's first process. A preparation script of the job's own, `scripts/prepare_landing.py`,
+downloads the yearly CSV files of the *Votações* dataset of the Câmara dos Deputados and lays
+out, as a prerequisite, a flat landing directory with one CSV file per hour that has data, named
+after that hour (`votacoes_YYYYMMDDHH.csv`), for two years of history. The ingestio process,
+`src/main.py` with its configuration `src/config.json`, then reads with `ReadSource`, on the
+`disk` system, only the files above the watermark kept in the target's own rows, stamps every
+row with the name of its file, and appends the batch with `AppendOnly` to `camara.votacoes` in
+PostgreSQL, in one transaction. Everything runs in two `docker compose` services, `spark` (the
+job's image, where the landing directory is mounted and the script and the job run) and
+`postgres`, and the README documents how to bring them up and run the job.
+
+**Revision `0.3.0`.** On 2026-10-24 the maintainer asked for a change of structure: the job's
+code moves to `src/` (`main.py`, `config.json` and `warehouse.py`), the job's own callbacks are
+defined in `src/main.py` and `callbacks.py` no longer exists, and the preparation script moves
+to `scripts/`. The commands become `docker compose exec spark python src/main.py` and
+`docker compose exec spark python scripts/prepare_landing.py ...`. The process, its steps and
+callbacks, the contents of the configuration, the table, the landing, the watermark, the log and
+the exit codes are those of `0.2.0`: only where the files live and how they are invoked change
+(D15).
 
 This spec is written for the options recommended under **Open questions**. The parts that
 depend on an answer are marked with the question, such as *(Q2)*; a different answer sends the
@@ -37,10 +48,20 @@ Dados Abertos, prepared as a prerequisite, with the time of the data in each fil
 per hour, two years of history at first; container 2 with PostgreSQL, where the job creates the
 table and loads the data; a job built with ingestio, as `main.py` and `config.json`.
 
+The maintainer's second request, 2026-10-24, for `0.3.0`: "eu queria uma mudanca de estrutura.
+Main, config e callbacks ficam dentro de uma pasta src", and then "inclusive, nao precisa existir
+um arquivo chamado callback, quero que ele esteja dentro da main": a change of structure, with
+the main module, the configuration and the callbacks inside a folder `src`, and no file of
+callbacks, the callbacks living in the main module. The maintainer's answers to the questions
+this raised are D15.
+
 What it shows about ingestio:
 
 - the library's minimum job, `main.py` and `config.json`, running a complete incremental load
   from files on disk to PostgreSQL with the shipped `ReadSource` and `AppendOnly`;
+- that the minimum job does not depend on where its two files sit: `src/main.py` finds
+  `src/config.json` as `Path(__file__).with_name("config.json")`, wherever it is run from, and
+  defines the job's own callbacks itself, as the knowledge base allows;
 - a watermark taken from the file names, selected by `DiskReader` before Spark loads anything,
   and kept in the target's own rows through Spark's `_metadata` column, so that the rows and the
   watermark commit in one transaction;
@@ -94,7 +115,7 @@ pattern, which only `config.json` holds (see **Decisions**, D13).
 
 ### The process
 
-`main.py` builds, under its guard, one process of two steps:
+`src/main.py` builds, under its guard, one process of two steps:
 
 ```text
 Step("extract", [ReadSource(config, watermark_value=watermark)])
@@ -115,8 +136,8 @@ runs before both.
   - `AppendOnly`, last in `load`: appends `state["records"]` to the `target`, a `postgres`
     system, in one transaction. The goal is an incremental append: `FullLoad` would truncate,
     `SCD2` keeps a dimension's history.
-- **Own callbacks** (subclasses of `ingestio.Callback`; both essential, as every callback is at
-  0.5.0):
+- **Own callbacks** (subclasses of `ingestio.Callback`, defined in `src/main.py` itself, D15;
+  both essential, as every callback is at 0.5.0):
   - `SkipEmptyBatch`, first in `load`: when `state["records"]` has no row (`isEmpty()`), raises
     `CancelStepException("no new row")`, so that nothing after it in the step runs. It must run
     before `StampSourceFile`, because an empty selection has no `_metadata` column (pitfall 2).
@@ -130,11 +151,12 @@ runs before both.
 - **Outside the process, the job's own code, which the library leaves to the job:**
   - the `PostgresConnection`, from libpq's variables;
   - the Spark session, with the pgJDBC driver;
-  - the target's DDL, through psycopg (ADR 0014);
-  - the watermark query, through psycopg (README of the library: "query the warehouse");
-  - the preparation script, which is not an ingestio process and imports nothing of ingestio
-    or Spark: it is the producer of the landing directory, the prerequisite the maintainer
-    asked for. ingestio 0.5.0 has no reader of CSV over HTTP (`JsonApiReader` decodes JSON), and
+  - the target's DDL, through psycopg (ADR 0014), in `src/warehouse.py`;
+  - the watermark query, through psycopg (README of the library: "query the warehouse"), in
+    `src/warehouse.py`;
+  - the preparation script, `scripts/prepare_landing.py`, which is not part of the ingestio
+    job and imports nothing of ingestio or Spark: it is the producer of the landing directory,
+    the prerequisite the maintainer asked for. ingestio 0.5.0 has no reader of CSV over HTTP (`JsonApiReader` decodes JSON), and
     this process does not need one: it reads the local files.
 
 ### Rules of a valid job
@@ -146,16 +168,17 @@ runs before both.
    `database`, `user`, `password`) to open its own psycopg connections. No internal module, no
    name starting with `_`. pyspark and psycopg are used directly, which the rule does not cover.
 2. **Extension only through the documented way.** The two own callbacks subclass `Callback` in
-   the job's modules and are registered nowhere. The systems are the shipped `disk` and
-   `postgres`; the job adds no connector.
+   `src/main.py`, the entry point, which section 3 of the knowledge base allows ("defined there
+   or imported from the job's modules next to it"), and are registered nowhere. The systems are
+   the shipped `disk` and `postgres`; the job adds no connector.
 3. **Criticality.** Every callback is essential and fails the run when it fails; no callback
    catches its own failure. No stage needs to be non-essential. `SkipEmptyBatch` cancels the
    step for an expected condition, the empty batch.
 4. **No connector decides the strategy.** `AppendOnly` chooses the append. The `target` section
    holds `system` and `table_name` only: no `options`, no mode.
 5. **No way around the library.** No monkeypatching and no subclass of a shipped callback or
-   connector. `config.json` is a static file of the repository with an absolute `path`; nothing
-   generates or rewrites it at run time. The job's code reads two of its values,
+   connector. `src/config.json` is a static file of the repository with an absolute `path`;
+   nothing generates or rewrites it at run time. The job's code reads two of its values,
    `target.table_name` and `source.watermark_pattern`, for its DDL and its watermark query,
    and never writes it (D13). The batch reaches the target only through `AppendOnly`; the job's
    psycopg connections run only the DDL and the watermark query, which the library leaves to
@@ -168,39 +191,107 @@ runs before both.
 The layout the maintainer suggested, year/month/day folders, meets rules 5 and 6 only with a
 workaround: it is not planned, and the gap is described under **Library gaps** (Q1).
 
+### The layout of `0.3.0` against the knowledge base and CONTRIBUTING.md
+
+The layout of D15 moves files and changes how they are invoked; it adds no import of ingestio,
+no extension and no way around the library, so each rule above holds as it did in `0.2.0`.
+
+- **The knowledge base, section 3.** `main.py` "defines or imports the job's own callbacks", and
+  they are "defined there or imported from the job's modules next to it": defining
+  `SkipEmptyBatch` and `StampSourceFile` in `src/main.py` is the first of the two. The knowledge
+  base names no directory for the two files of the minimum job.
+- **The configuration's location.** `src/main.py` names its configuration
+  `Path(__file__).with_name("config.json")`, which is `src/config.json` wherever the job is run
+  from (section 3, When it is read). The landing's `path` inside it stays absolute (pitfall 9):
+  nothing in the configuration is relative to `src/`.
+- **The guard.** `src/main.py` keeps everything that reads the configuration, the environment or
+  starts a JVM in functions called under `if __name__ == "__main__":`. Defining the two classes
+  in it builds nothing: they are built by `build_process`. Importing `main` still reads no file,
+  touches no database and starts no session.
+- **CONTRIBUTING.md, Layout.** "`main.py` is the entry point" and "`config.json` holds the job's
+  configuration" hold for `src/main.py` and `src/config.json`; neither sentence names a
+  directory. "The job's own callbacks and helpers live in modules next to `main.py`, named after
+  what they do": `warehouse.py`, the helper, is a module next to `src/main.py`, named after what
+  it does. The two callbacks are defined in `main.py` itself, which that sentence, read
+  literally, does not foresee. The knowledge base allows it, and CONTRIBUTING.md says that the
+  knowledge base "wins over this file when the two disagree", so the layout follows the rules of
+  both. The wording is reported to the main session, since CONTRIBUTING.md is the hub's.
+- **`scripts/prepare_landing.py`** is not part of the ingestio job: it imports nothing of
+  ingestio and runs outside the process. The layout rules of CONTRIBUTING.md cover the job's
+  `main.py`, `config.json`, callbacks and helpers, and say nothing against a script in a
+  directory of its own.
+
 ## Scope
 
 In scope:
 
+- The layout of the repository and of the `spark` image (**Configuration**, The layout of the
+  job):
+  - `src/main.py`, the entry point, which defines the job's own callbacks `SkipEmptyBatch` and
+    `StampSourceFile`; `src/config.json`, the job's configuration; and `src/warehouse.py`, next
+    to them: the values the job reads from its configuration (D13), the DDL and the watermark
+    query.
+  - `scripts/prepare_landing.py`, the preparation script, which is not part of the ingestio
+    job: it downloads the yearly files of the years a window of hours touches, splits their
+    rows into one file per hour, and writes them to the landing directory atomically, in
+    ascending order, never rewriting a file already there.
 - `compose.yaml` at the repository root, with two services:
   - `postgres`: the image, environment, published port and health check of the service
     container of `.github/workflows/ci.yml`;
   - `spark`: the job's image, built from a `Dockerfile` at the repository root, with the
-    repository's `data` directory mounted at `/data` and libpq's variables pointing at
-    `postgres`. It stays up, and the preparation script and the job run inside it with
-    `docker compose exec`.
+    repository's `data` directory mounted at `/data`, libpq's variables pointing at `postgres`,
+    and `/app` as its working directory. It stays up, and the preparation script and the job
+    run inside it with `docker compose exec`.
 - The `Dockerfile` of the `spark` image: Java 17, Python 3.12, uv, and the job's environment
-  from `uv sync --locked`, whose pyspark 4.2.0 brings Spark *(Q7)*; and a `.dockerignore` that
-  keeps `data/`, `.venv/`, `.git/` and the tool caches out of the build context.
-- `prepare_landing.py`, the preparation script: downloads the yearly files of the years a window
-  of hours touches, splits their rows into one file per hour, and writes them to the landing
-  directory atomically, in ascending order, never rewriting a file already there.
-- `main.py` and `config.json`, and the job's own modules next to `main.py`: the two own
-  callbacks, the DDL and the watermark query.
+  from `uv sync --locked`, whose pyspark 4.2.0 brings Spark *(Q7)*; `src/` and `scripts/`
+  copied to `/app/src` and `/app/scripts`; and a `.dockerignore` that keeps `data/`, `.venv/`,
+  `.git/`, the tool caches and every `__pycache__` directory, at any depth, out of the build
+  context.
 - The target table `camara.votacoes`, its schema `camara`, and their DDL, applied by the job.
 - `.gitignore`: the contents of `data/` ignored, with a tracked `data/.gitkeep` so that the
   directory exists before Docker mounts it.
+- Where the tests import the job's modules from: `pythonpath` of `[tool.pytest.ini_options]` in
+  `pyproject.toml`, `["src", "scripts"]` (D16).
 - The tests of the acceptance criteria, on the host and in CI.
 - Documentation: the README section that brings the environment up and runs the job, with the
   commands of AT-022 in that order, what each one does and what it shows; the dataset, its
   terms, and that the data is never committed; the landing layout and file format; what a
   second run shows; that `docker compose down --volumes` discards the database and keeps the
-  landing; how to run the tests on the host; the gap of the nested layout. A page in `docs/`
-  for the process, `docs/index.md`, and the `0.2.0` entry of `CHANGELOG.md`.
-- The job's version `0.2.0` in `pyproject.toml`.
+  landing; how to run the tests on the host; the gap of the nested layout; where the job's files
+  are, `src/` and `scripts/`. A page in `docs/` for the process, `docs/index.md`, and the
+  `0.2.0` and `0.3.0` entries of `CHANGELOG.md`.
+- The job's version `0.3.0` in `pyproject.toml`.
+
+**What the `0.3.0` revision changes**, against `0.2.0`; everything else stays as it is:
+
+- `main.py`, `config.json` and `warehouse.py` move from the root to `src/`, with the same
+  behaviour; `SkipEmptyBatch` and `StampSourceFile` move from `callbacks.py` into `src/main.py`,
+  and `callbacks.py` is removed;
+- `prepare_landing.py` moves from the root to `scripts/`, with the same behaviour;
+- the root keeps none of `main.py`, `config.json`, `warehouse.py`, `callbacks.py` and
+  `prepare_landing.py`;
+- the `Dockerfile` copies `src/` and `scripts/` into `/app` instead of the five files of the
+  root; `.dockerignore` keeps every `__pycache__` out, now that modules live in subdirectories;
+  `compose.yaml` sets the `spark` service's working directory to `/app`;
+- pytest's `pythonpath` becomes `["src", "scripts"]`, and its comment says so (D16);
+- the acceptance criteria: the job's configuration is `src/config.json`, in "the job runs" and
+  in AT-015; AT-012 and AT-016 to AT-020 name `scripts/prepare_landing.py`; AT-021 checks the
+  working directory `/app`; AT-022 holds the new commands and none of `0.2.0`; AT-023 to AT-028
+  are new;
+- the README's commands, the page of the process, `docs/index.md` and the `0.3.0` entry of
+  `CHANGELOG.md`;
+- the version, `0.3.0`.
 
 Out of scope:
 
+- Any change of behaviour in `0.3.0`: the process, its steps and callbacks, the contents of the
+  configuration, the table, the landing, the watermark, the log and the exit codes are those of
+  `0.2.0`.
+- Making the job a Python package or an installable project: no `__init__.py` in `src/` or
+  `scripts/`, no `python -m`, no entry point in `pyproject.toml`. The modules are run as
+  scripts, `python src/main.py`, and imported by their names.
+- Moving `tests/`, `data/`, `compose.yaml`, the `Dockerfile`, `pyproject.toml`, `uv.lock` or
+  `.python-version`: they stay at the root.
 - The year/month/day layout of the landing directory (GAP-001, Q1).
 - Downloading the dataset inside an ingestio process: the preparation script does it, outside
   the process.
@@ -209,14 +300,36 @@ Out of scope:
 - Late data: rows that the Câmara adds to an hour after the hour was landed. A landed file is
   never rewritten.
 - Scheduling the job, or running two runs of it at once.
-- A CI job that builds the image or runs the compose environment end to end. The compose file is
-  checked statically (AT-021); the end-to-end run is the README's, run by hand.
+- A CI job that builds the image or runs the compose environment end to end. The compose file
+  (AT-021) and the `Dockerfile` (AT-028) are checked statically; the end-to-end run is the
+  README's, run by hand.
 - Removing orphaned `ingestio_staging_*` tables (pitfall 14): left to whoever runs the database.
 - Spark outside local mode.
 
 ## Configuration
 
-### `config.json`
+### The layout of the job
+
+The job's files, in the repository and in the `spark` image, whose working directory `/app`
+mirrors the repository (D15):
+
+| In the repository | In the `spark` image | What it is |
+|---|---|---|
+| `src/main.py` | `/app/src/main.py` | the entry point; it defines the job's own callbacks, `SkipEmptyBatch` and `StampSourceFile` |
+| `src/config.json` | `/app/src/config.json` | the job's configuration, which `src/main.py` names `Path(__file__).with_name("config.json")` |
+| `src/warehouse.py` | `/app/src/warehouse.py` | the job's helper: the values it reads from the configuration (D13), the DDL and the watermark query |
+| `scripts/prepare_landing.py` | `/app/scripts/prepare_landing.py` | the preparation script, not part of the ingestio job |
+| `pyproject.toml`, `uv.lock`, `.python-version` | `/app/` | the job's environment, which the image builds with `uv sync --locked` |
+| `data/` | `/data`, a bind mount | the landing, never committed |
+| `tests/`, `docs/`, `specs/` | not copied | |
+
+No `callbacks.py` exists, and the root of the repository holds none of `main.py`,
+`config.json`, `warehouse.py`, `callbacks.py` and `prepare_landing.py`. `src/` and `scripts/`
+are plain directories, not packages: `python src/main.py` puts `src/` first on `sys.path`, so
+`src/main.py` imports `warehouse` by its name, and the tests import `main`, `warehouse` and
+`prepare_landing` by their names (D16).
+
+### `src/config.json`
 
 ```json
 {
@@ -299,11 +412,20 @@ in `.github/workflows/ci.yml`.
   long as its container.
 - `spark`: built from the repository's `Dockerfile`; the repository's `data` directory mounted
   at `/data`; `depends_on` `postgres` with the condition `service_healthy`; the environment of
-  the table above; it stays up (it runs no job on start), with the job's files as its working
-  directory, so that `docker compose exec spark python main.py` runs the job and
-  `docker compose exec spark python prepare_landing.py ...` the preparation script. It runs as
-  a non-root user with uid and gid 1000, so that the files it writes under `data/` belong on
-  the host to the usual first user. It publishes no port.
+  the table above; it stays up (it runs no job on start), with `/app` as its working directory
+  (`working_dir`), the directory of the image that mirrors the repository, so that
+  `docker compose exec spark python src/main.py` runs the job and
+  `docker compose exec spark python scripts/prepare_landing.py ...` the preparation script. It
+  runs as a non-root user with uid and gid 1000, so that the files it writes under `data/`
+  belong on the host to the usual first user. It publishes no port.
+
+### The `Dockerfile`
+
+The image of D11, with `/app` as its `WORKDIR`. In `/app` it copies `.python-version`,
+`pyproject.toml` and `uv.lock` and runs `uv sync --locked --no-install-project`, as in `0.2.0`;
+then, in place of the five files of the root that `0.2.0` copied, it copies the build context's
+`src/` to `/app/src/` and its `scripts/` to `/app/scripts/`, owned by uid and gid 1000. It copies
+nothing else of the job.
 
 ### The landing directory and its files
 
@@ -391,10 +513,15 @@ CREATE TABLE IF NOT EXISTS camara.votacoes (
 
 ### The job's entry points
 
-The tests call the job through these names, and `main.py` runs only `main()`, under its guard:
+The module `main` is `src/main.py` and the module `prepare_landing` is
+`scripts/prepare_landing.py`. The tests import them by those names (D16) and call the job
+through these names, which keep the names and signatures of `0.2.0`; `src/main.py` runs only
+`main()`, under its guard:
 
 ```text
 main.PGJDBC_VERSION = "42.7.14"
+main.SkipEmptyBatch                       # a subclass of ingestio.Callback, defined in main
+main.StampSourceFile                      # a subclass of ingestio.Callback, defined in main
 main.build_spark_session(*, master: str = "local[*]") -> SparkSession
 main.connection_from_env(environ: Mapping[str, str]) -> PostgresConnection
 main.build_process(config: str | os.PathLike[str], *, connection: PostgresConnection, watermark: str | None) -> Process
@@ -413,16 +540,22 @@ prepare_landing.main(argv: Sequence[str] | None = None) -> int
   DDL, reads the watermark and logs it, builds the process with `build_process`, runs it and
   returns it. It uses the active Spark session.
 - `main`: configures the console, builds the connection from `os.environ`, starts the session
-  with `build_spark_session()`, calls `run_job` on the `config.json` next to `main.py`, and stops
-  the session at the end, also when the run fails.
-- The own callbacks and the DDL live in the job's modules next to `main.py`, named after what
-  they do; their module names are the implementer's.
+  with `build_spark_session()`, calls `run_job` on `src/config.json`, the `config.json` next to
+  `main.py` (`Path(__file__).with_name("config.json")`), and stops the session at the end, also
+  when the run fails.
+- `SkipEmptyBatch` and `StampSourceFile` are defined in `src/main.py` itself, not imported into
+  it, and `build_process` builds each with no argument. The reading of `target.table_name` and
+  `source.watermark_pattern`, the DDL and the watermark query live in `src/warehouse.py`, next
+  to `main.py`; the names of its functions are the implementer's.
 
 ### The preparation script
 
 ```text
-python prepare_landing.py --landing DIR --start YYYY-MM-DDTHH --end YYYY-MM-DDTHH [--base-url URL]
+python scripts/prepare_landing.py --landing DIR --start YYYY-MM-DDTHH --end YYYY-MM-DDTHH [--base-url URL]
 ```
+
+It is run from the directory that holds `scripts/`: `/app` in the `spark` service, the
+repository's root on the host. It needs only the standard library.
 
 | Argument | Required | What it is |
 |---|---|---|
@@ -444,7 +577,7 @@ It logs through `logging`, never `print`.
    `PGDATABASE`. A missing or empty required variable raises
    `ValueError("<NAME> is not set")`, and a `PGPORT` that is not an integer
    `ValueError("PGPORT must be an integer")`, before Spark starts and before anything touches
-   the database.
+   the database. The error propagates out of `main()`, and Python exits with status 1.
 3. It starts the Spark session, in local mode, with the pgJDBC driver, which Spark downloads
    from Maven Central on the first start in a container and keeps in the container's home.
 4. `run_job` applies the DDL: the schema and the table are created when missing, and an existing
@@ -571,10 +704,10 @@ dataset on 2026-10-24). The README's incremental step adds January 2026.
 Each criterion is testable on its own, from outside the job's code. Its tests are named after
 it: `AT-001` is covered by `test_at001_<description>` in `tests/test_camara_hourly_ingestion.py`.
 
-"The job runs" means `main.run_job(config, connection=...)` with a configuration that is the
-job's `config.json` with its own `source.path` (a directory under `tmp_path`) and its own
-`target.table_name` (a schema of the test's own), and the connection to the PostgreSQL of the
-environment. "A landing file" is a file the test writes in the landing format of
+"The job runs" means `main.run_job(config, connection=...)`, of `src/main.py`, with a
+configuration that is the job's `src/config.json` with its own `source.path` (a directory under
+`tmp_path`) and its own `target.table_name` (a schema of the test's own), and the connection to
+the PostgreSQL of the environment. "A landing file" is a file the test writes in the landing format of
 **Configuration**, with synthetic values.
 
 ### The process
@@ -628,9 +761,9 @@ environment. "A landing file" is a file the test writes in the landing format of
   another row with `id` `X`, when the job runs, then an exception propagates out of `run_job`
   and the target is unchanged.
 - **AT-012**: Given synthetic yearly files of 2024 and 2025 in the Câmara's format (with a BOM,
-  mixed `\r\n` and `\n` record ends, line breaks inside values), when `prepare_landing.py` lays
-  out the landing for `2024-01-01T00` to `2025-12-31T23` from them and the job then runs on that
-  landing, then the target holds every row registered in the window, each once, with its values,
+  mixed `\r\n` and `\n` record ends, line breaks inside values), when the preparation script,
+  `prepare_landing.main` of `scripts/prepare_landing.py`, lays out the landing for
+  `2024-01-01T00` to `2025-12-31T23` from them and the job then runs on that landing, then the target holds every row registered in the window, each once, with its values,
   and no other row.
 
 ### The connection
@@ -646,8 +779,8 @@ environment. "A landing file" is a file the test writes in the landing format of
 
 ### The configuration
 
-- **AT-015**: Given the job's `config.json`, then its `source` is the `disk` system with `path`
-  `/data/landing/votacoes`, `format` `csv`, the `schema` and the `options` of
+- **AT-015**: Given the job's configuration, `src/config.json`, then its `source` is the `disk`
+  system with `path` `/data/landing/votacoes`, `format` `csv`, the `schema` and the `options` of
   **Configuration**, and a `watermark_pattern` that `re.fullmatch`es `votacoes_2024020618.csv`
   capturing `2024020618` and matches neither `.votacoes_2024020618.csv.tmp` nor
   `votacoes_2024-02-06T18.csv`; its `target` is the `postgres` system with `table_name`
@@ -656,8 +789,9 @@ environment. "A landing file" is a file the test writes in the landing format of
 
 ### The preparation script
 
-In these criteria the yearly files are synthetic, written by the test in the Câmara's format
-into a directory that `--base-url` names as a `file:` URL.
+In these criteria "`prepare_landing.py` runs" means `prepare_landing.main(argv)`, of
+`scripts/prepare_landing.py`, with the arguments given; the yearly files are synthetic, written
+by the test in the Câmara's format into a directory that `--base-url` names as a `file:` URL.
 
 - **AT-016**: Given yearly files of 2024 and 2025 whose rows are registered in four distinct
   hours of the window, two rows in one of them, when `prepare_landing.py` runs with
@@ -691,38 +825,92 @@ into a directory that `--base-url` names as a `file:` URL.
   then it describes exactly two services, `postgres` and `spark`; `postgres` has the image
   `postgres:17`, `POSTGRES_PASSWORD` `postgres`, the port 5432 published on 5432, and a health
   check that runs `pg_isready -U postgres` every 5 s with a timeout of 5 s and 10 retries;
-  `spark` is built from the repository's root, mounts the repository's `data` directory at
-  `/data`, depends on `postgres` with the condition `service_healthy`, and has `PGHOST`
-  `postgres`, `PGPORT` `5432`, `PGUSER` `postgres`, `PGPASSWORD` `postgres` and `PGDATABASE`
-  `postgres` in its environment.
+  `spark` is built from the repository's root, has the working directory `/app`, mounts the
+  repository's `data` directory at `/data`, depends on `postgres` with the condition
+  `service_healthy`, and has `PGHOST` `postgres`, `PGPORT` `5432`, `PGUSER` `postgres`,
+  `PGPASSWORD` `postgres` and `PGDATABASE` `postgres` in its environment.
 - **AT-022**: Given `README.md`, then it holds these commands, each verbatim, in this order:
 
   ```bash
   docker compose up --build --wait
-  docker compose exec spark python prepare_landing.py --landing /data/landing/votacoes --start 2024-01-01T00 --end 2025-12-31T23
-  docker compose exec spark python main.py
+  docker compose exec spark python scripts/prepare_landing.py --landing /data/landing/votacoes --start 2024-01-01T00 --end 2025-12-31T23
+  docker compose exec spark python src/main.py
   docker compose exec postgres psql -U postgres -c "SELECT count(*), max(source_file) FROM camara.votacoes"
-  docker compose exec spark python prepare_landing.py --landing /data/landing/votacoes --start 2026-01-01T00 --end 2026-01-31T23
-  docker compose exec spark python main.py
+  docker compose exec spark python scripts/prepare_landing.py --landing /data/landing/votacoes --start 2026-01-01T00 --end 2026-01-31T23
+  docker compose exec spark python src/main.py
   docker compose down --volumes
   ```
+
+  and it holds neither `python main.py` nor `python prepare_landing.py`, the commands of
+  `0.2.0`.
+
+### The layout of the job
+
+- **AT-023**: Given the repository, then `src/` holds `main.py`, `config.json` and
+  `warehouse.py`, and `scripts/` holds `prepare_landing.py`; and the modules that the tests
+  import as `main`, `warehouse` and `prepare_landing` are the files `src/main.py`,
+  `src/warehouse.py` and `scripts/prepare_landing.py`.
+- **AT-024**: Given the repository, then no file named `callbacks.py` exists anywhere in it,
+  outside its hidden directories; and its root holds none of `main.py`, `config.json`,
+  `warehouse.py`, `callbacks.py` and `prepare_landing.py`.
+- **AT-025**: Given the module `main`, then `main.SkipEmptyBatch` and `main.StampSourceFile` are
+  classes that subclass `ingestio.Callback` and whose `__module__` is `"main"`: they are defined
+  in `src/main.py`, not imported into it.
+- **AT-026**: Given an environment without `PGHOST`, when `python src/main.py` runs with the
+  repository's root as its working directory, then it exits with status 1 and its standard
+  error holds `ValueError: PGHOST is not set`.
+- **AT-027**: Given a directory that holds a yearly file of 2024 in the Câmara's format, with
+  one row registered at `2024-02-06T18:35:59`, when
+  `python scripts/prepare_landing.py --landing <a new directory> --start 2024-02-06T18 --end 2024-02-06T18 --base-url <that directory, as a file: URL>`
+  runs with the repository's root as its working directory, then it exits with status 0 and
+  the landing directory holds exactly `votacoes_2024020618.csv`.
+- **AT-028**: Given the repository's `Dockerfile`, then its last `WORKDIR` is `/app`; it copies
+  the build context's directory `src` to `/app/src` and its directory `scripts` to
+  `/app/scripts`; and none of its `COPY` instructions copies `main.py`, `config.json`,
+  `warehouse.py`, `callbacks.py` or `prepare_landing.py` from the root of the build context.
 
 ### Notes for testing
 
 - AT-001 to AT-012 need Spark and PostgreSQL, AT-021 the Docker CLI: they are integration tests.
-  AT-013 to AT-020 and AT-022 need neither; AT-015 builds the callbacks, which touches nothing.
+  AT-013 to AT-020 and AT-022 to AT-028 need neither; AT-015 builds the callbacks, which touches
+  nothing, and AT-026's child process imports pyspark but starts no session.
+- The tests import `main` (and, through it, `warehouse`) from `src/` and `prepare_landing` from
+  `scripts/`, by those names: pytest's `pythonpath` is `["src", "scripts"]` (D16). The job's
+  configuration is `src/config.json`.
 - The session of the run is `main.build_spark_session(master="local[2]")`, built first.
 - The tests reach PostgreSQL through the five variables, `PGHOST=localhost` on the host and in
   CI, and fail, rather than skip, when it is unreachable (pitfall 19).
-- Each test takes the `schema` and the `options` from the job's `config.json`, so that it runs
-  the job's real configuration, and writes its copy with its own `path` and `table_name` with
-  `json.dumps` under `tmp_path`.
+- Each test takes the `schema` and the `options` from the job's `src/config.json`, so that it
+  runs the job's real configuration, and writes its copy with its own `path` and `table_name`
+  with `json.dumps` under `tmp_path`.
 - The synthetic rows invent their ids, texts and organs; no row of the dataset is used.
-- The AT-022 test reads `README.md` and finds each command after the previous one.
+- The AT-022 test reads `README.md`, finds each command after the previous one, and checks that
+  neither command of `0.2.0` appears anywhere in it.
+- AT-023 compares resolved paths: `Path(main.__file__).resolve()` with `src/main.py` of the
+  repository's root, and likewise for `warehouse` and `prepare_landing`.
+- AT-024 walks the repository from its root and skips every directory whose name starts with
+  `.` (`.venv`, `.git`, `.claude` and the tool caches among them) and `data/`.
+- AT-026 and AT-027 run the commands as subprocesses, with `sys.executable` in place of
+  `python` and the repository's root, laid out as `/app` is in the image, as the working
+  directory. AT-026 removes `PGHOST` from the child's environment, since CI sets it. Neither
+  sets `PYTHONPATH`: the child finds `warehouse` because `python src/main.py` puts `src/` first
+  on `sys.path`, as it does in the container. AT-027's yearly file is synthetic, as in AT-016
+  to AT-020.
+- AT-028 reads the `Dockerfile` as text: it joins the lines that end with `\`, reads the
+  `WORKDIR` and `COPY` instructions in order, skips the `COPY --from=...` instructions (the uv
+  binary) and the options of `COPY` such as `--chown`, resolves a relative destination against
+  the `WORKDIR` before it, and ignores trailing slashes and a leading `./`.
+- Together, AT-021, AT-026, AT-027 and AT-028 check that the commands of AT-022 run in the
+  `spark` service from `/app`, without building the image: the service's working directory is
+  `/app`, the image holds the repository's `src/` and `scripts/` under it, and the commands work
+  from a directory laid out that way.
 - The end-to-end run in compose, with the real dataset, is not an automated test: it needs the
   image build, the Câmara and Maven Central. It is the README's, run by hand.
 
 ## Library gaps
+
+The `0.3.0` revision runs into no gap: it moves files and changes how they are invoked, with
+the public API and the documented extension of `0.2.0`. The gap of `0.2.0`:
 
 ### GAP-001: `DiskReader` reads one directory only, so a landing laid out in year/month/day folders cannot be read
 
@@ -821,15 +1009,52 @@ anything.
   so the container runs the very ingestio 0.5.0, pyspark 4.2.0 and psycopg 3.3.6 of `uv.lock`
   that the tests run. pyspark is in the `dev` group, so the image installs the default groups.
   The first build downloads and builds pyspark's source archive of about 450 MB and takes
-  minutes; the README says so. The exact base tag is the implementer's, pinned.
-- **D12. Tests run on the host and in CI**, as the knowledge base describes, not in the
-  containers. The compose file is checked with `docker compose config`; CI's runner has the
-  Docker CLI, so `.github/workflows/ci.yml` needs no change for this spec.
-- **D13. The job reads two values of its `config.json`:** `target.table_name`, for the DDL and
-  the watermark query, and `source.watermark_pattern`, to turn the stored file name into the
-  watermark. Reading them keeps each named once; the job never writes the file.
-- **D14. Version `0.2.0`:** the job's first process is a feature, which bumps the minor of
-  `0.1.0` (CONTRIBUTING.md, Versions and the changelog).
+  minutes; the README says so. The exact base tag is the implementer's, pinned. Its working
+  directory, `/app`, mirrors the repository: `/app/src` and `/app/scripts`, copied from the
+  build context, beside the `pyproject.toml`, `uv.lock` and `.python-version` that `uv sync`
+  reads (D15).
+- **D12. Tests run on the host and in CI**, from the repository's root, as the knowledge base
+  describes, not in the containers. The compose file is checked with `docker compose config`
+  and the `Dockerfile` as text; CI's runner has the Docker CLI, so `.github/workflows/ci.yml`
+  needs no change for this spec: its commands run from the root, and pytest reads its
+  `pythonpath` from `pyproject.toml`.
+- **D13. The job reads two values of its configuration, `src/config.json`:**
+  `target.table_name`, for the DDL and the watermark query, and `source.watermark_pattern`, to
+  turn the stored file name into the watermark. Reading them keeps each named once; the job
+  never writes the file. The reading lives in `src/warehouse.py`.
+- **D14. The versions.** `0.2.0`: the job's first process is a feature, which bumps the minor
+  of `0.1.0`. `0.3.0`: the layout of D15 changes the way the job is run, the commands of the
+  README among them, since `python main.py` and `python prepare_landing.py` no longer exist; it
+  is a breaking change, which bumps the minor while the version is `0.x` (CONTRIBUTING.md,
+  Versions and the changelog; the maintainer's answer 5 of 2026-10-24, D15).
+- **D15. The layout of `0.3.0`**, from the maintainer's request and answers of 2026-10-24. The
+  request: "eu queria uma mudanca de estrutura. Main, config e callbacks ficam dentro de uma
+  pasta src", and then "inclusive, nao precisa existir um arquivo chamado callback, quero que
+  ele esteja dentro da main". The answers:
+  1. `src/` holds `main.py`, `config.json` and `warehouse.py`, the helper with the values of the
+     configuration, the DDL and the watermark query, next to `main.py`.
+  2. `callbacks.py` no longer exists: the job's own callbacks, `SkipEmptyBatch` and
+     `StampSourceFile`, are defined in `src/main.py`.
+  3. `prepare_landing.py` moves to a folder `scripts/`, as `scripts/prepare_landing.py`: it is
+     not part of the ingestio job.
+  4. The commands become `docker compose exec spark python src/main.py` and
+     `docker compose exec spark python scripts/prepare_landing.py --landing ...`. The container
+     mirrors the repository: its working directory is `/app`, with `/app/src` and
+     `/app/scripts`.
+  5. The version is `0.3.0` (D14).
+
+  The behaviour is the one of `0.2.0`: the process, its steps and callbacks, the contents of the
+  configuration, the table, the landing, the watermark, the log and the exit codes. The layout
+  meets the knowledge base and CONTRIBUTING.md as **Fit with ingestio** shows.
+- **D16. The tests import the job's modules by their names, from `src/` and `scripts/`.**
+  `pythonpath` of `[tool.pytest.ini_options]` in `pyproject.toml`, `["."]` in `0.2.0`, becomes
+  `["src", "scripts"]`, and its comment says that the job's modules are imported from those two
+  directories. The implementer changes it, with the move of the files: the tester writes only
+  `tests/`, and the implementer is the one stage of docs/workflow.md that writes
+  `pyproject.toml`, where that page names `project.version` and the ingestio extras; the import
+  roots follow the layout the implementer creates. mypy keeps running over `.`; the implementer confirms with `uv run --locked mypy` that it
+  resolves `main`, `warehouse` and `prepare_landing`, and changes `[tool.mypy]` only if it does
+  not.
 
 ## Open questions
 
@@ -840,6 +1065,10 @@ written for the recommended options.
 session ("Vc tem a minnha carta branca pra ir tocando"), which took the recommended option of
 every question: Q1 (a), Q2 (a), Q3 (a), Q4 (a), Q5 (a), Q6 (a), Q7 (a), Q8 (a). The maintainer
 reviews them when back; a different answer returns the spec to planning.
+
+**The `0.3.0` revision raises no question.** The maintainer gave the definitions on 2026-10-24,
+recorded in D15 and D14. The maintainer's sixth answer, an approval of the spec provided it
+follows them, is the main session's to record.
 
 - **Q1. The layout of the landing directory.** The suggested year/month/day folders cannot be
   read by a valid job (GAP-001).
@@ -903,3 +1132,11 @@ One entry per stage, recorded by the main session from the stage's report.
 | 2026-10-24 | documentation | documented | README run section with the seven AT-022 commands in order, a new page `docs/camara_hourly_ingestion.md`, the page and the spec in `docs/index.md`, and the `0.2.0` entry of `CHANGELOG.md`. |
 | 2026-10-24 | implementation | implemented | `main.py` with `callbacks.py` (`SkipEmptyBatch`, `StampSourceFile`) and `warehouse.py` (config values, DDL, watermark query); `config.json`; `prepare_landing.py`; `compose.yaml`, `Dockerfile` and `.dockerignore` for the `spark` image; `data/.gitkeep` and `.gitignore`; version `0.2.0`. All 42 tests, ruff and mypy pass, and the image builds. |
 | 2026-10-24 | validation | validated | Passed all nine checks: 42 tests, ruff, mypy and `uv lock --check`; code matches the documentation and the six rules of a valid job; ingestio 0.5.0 pinned and locked from PyPI; job at 0.2.0 in `pyproject.toml` and `CHANGELOG.md`. Non-blocking notes: the spec's status in `docs/index.md`, and the field-count error of the preparation script missing from the docs' errors table. |
+| 2026-10-24 | planning | draft | Revised in place for 0.3.0, the maintainer's layout of D15: `src/` holds `main.py`, `config.json` and `warehouse.py`; `SkipEmptyBatch` and `StampSourceFile` are defined in `src/main.py` and `callbacks.py` goes; the preparation script moves to `scripts/prepare_landing.py`; the image works from `/app`, and the commands become `python src/main.py` and `python scripts/prepare_landing.py`. Behaviour unchanged. AT-012 and AT-015 to AT-022 updated, AT-023 to AT-028 new for the layout; D14 covers both versions, D15 records the answers, D16 gives pytest's `pythonpath` to the implementer. No new gap or question. |
+| 2026-10-24 | approval | approved | Approved by the maintainer in advance, explicitly, provided the spec follows the answers of D15 ("Aprovo com estas respostas"); the revision follows them. |
+| 2026-10-24 | tests | tested | Tests revised for 0.3.0, 55 in all: "the job runs" uses `src/config.json` and the `main` of `src/main.py`, the preparation script's criteria the `prepare_landing` of `scripts/prepare_landing.py`; AT-021 and AT-022 updated, AT-023 to AT-028 new. Against 0.2.0 they fail only because the layout is missing (25 failed, 19 errors, 11 passed: AT-013 and AT-014); on a simulated 0.3.0 layout in a scratch copy all 55 pass. |
+| 2026-10-24 | documentation | documented | Documented 0.3.0, a layout change with the behaviour unchanged: the README's run section with the seven AT-022 commands (`scripts/prepare_landing.py`, `src/main.py`) and a section on the layout of `src/` and `scripts/`; every path and command of `docs/camara_hourly_ingestion.md`, with a layout section; the page's coverage in `docs/index.md`; the breaking `v0.3.0` entry of `CHANGELOG.md`. |
+| 2026-10-24 | implementation | implemented | `src/main.py` (with `SkipEmptyBatch` and `StampSourceFile` defined in it), `src/config.json` and `src/warehouse.py`; `scripts/prepare_landing.py`; the five root files and `callbacks.py` removed; version `0.3.0` and pytest's `pythonpath = ["src", "scripts"]` in `pyproject.toml`, `uv.lock` updated; `working_dir: /app` in `compose.yaml`; the Dockerfile copies `src/` and `scripts/` into `/app`; `.dockerignore` excludes `**/__pycache__`. All 55 tests, ruff, mypy and `uv lock --check` pass, and the image builds with the files in place. |
+| 2026-10-24 | validation | documented | Passed all nine checks (55 tests, ruff, mypy, `uv lock --check`, code against docs, rules of a valid job, pins, sources, write scopes), with one note the change itself introduced: the comment over the local import of `pyspark.sql.functions` in `StampSourceFile.run`, true in `callbacks.py`, is false in `src/main.py`, which imports pyspark at module level. The main session returned the change to the implementer to fix it before closing. |
+| 2026-10-24 | implementation | implemented | Fixed the returned note: `src/main.py` imports `SparkSession` and `functions` from `pyspark.sql` at the top, and `StampSourceFile.run` loses its local import and the stale comment; behaviour identical. 55 tests, ruff, mypy and `uv lock --check` pass, and the image rebuilt. |
+| 2026-10-24 | validation | validated | Re-validated after the returned fix, nothing else changed: all nine checks pass for 0.3.0 (55 tests, ruff, format, mypy, `uv lock --check`; the moved files identical to 0.2.0 apart from the callbacks inlined in `src/main.py`; the image mirrors the repository under `/app`; no stale reference to the removed files; architecture files and the ingestio pin unchanged). Notes for the hub: the Layout wording of CONTRIBUTING.md, which does not foresee callbacks defined in `main.py`, and the implementer's scope in the table of docs/workflow.md, which does not name pytest's settings, `compose.yaml`, `Dockerfile` or `.dockerignore`. |
