@@ -1,0 +1,33 @@
+# The two services of the job: the PostgreSQL it loads into, and the Spark container where the
+# landing is prepared and the job runs. See the README for the commands.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    # The settings of the service container of .github/workflows/ci.yml.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  spark:
+    build: .
+    user: "1000:1000"
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    volumes:
+      - ./data:/data
+    # It runs no job on start: the preparation script and the job run in it with `exec`.
+    command: ["sleep", "infinity"]

@@ -1,0 +1,71 @@
+[project]
+name = "ingestion_disk_to_postgres"
+version = "0.2.0"
+description = "Loads the CSV files of a public dataset from a local directory into a PostgreSQL table, appending only the files above its watermark."
+readme = "README.md"
+requires-python = ">=3.12"
+# ingestio alone, pinned to the version of .claude/kb/ingestio.md, from PyPI or from a tag of
+# its GitHub repository, never from a local path.
+dependencies = ["ingestio[postgres]==0.5.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    # The engine that ingestio's disk and PostgreSQL connectors run on. ingestio documents it as
+    # a prerequisite that the runtime provides and never installs it, so it is not a dependency
+    # of the job: here the runtime is this environment, and `uv sync` and `uv run` install the
+    # dev group by default. 3.5 is the floor ingestio documents; uv.lock holds the version used.
+    "pyspark>=3.5",
+]
+
+# ---------------------------------------------------------------------------
+# ruff — lint + format
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "A",        # flake8-builtins
+    "C4",       # flake8-comprehensions
+    "DTZ",      # flake8-datetimez  — enforces timezone-aware timestamps
+    "SIM",      # flake8-simplify
+    "PTH",      # flake8-use-pathlib
+    "RUF",      # ruff's own rules
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# The job is not a package: its modules are imported from the repository root.
+pythonpath = ["."]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "integration: tests that touch an external resource (network, Docker, Spark)",
+]
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+# Hidden directories, .venv and .claude among them, are skipped.
+files = ["."]
+strict = true

@@ -1,0 +1,17 @@
+# pre-commit is a development dependency, so `uv sync` already installs it.
+# Enable the hook once per clone with: uv run pre-commit install --hook-type commit-msg
+default_install_hook_types: [commit-msg]
+
+repos:
+  - repo: local
+    hooks:
+      - id: no-co-author-trailers
+        name: reject co-author trailers and AI-generation footers
+        description: Rejects every Co-Authored-By trailer and "Generated with/by <AI tool>" footers.
+        language: pygrep
+        # Anchored at the start of the line, where a real trailer or footer begins. The diff
+        # that `git commit -v` appends to the message prefixes every line with "+", "-" or a
+        # space, so a change that only mentions a trailer can still be committed.
+        entry: '^(co-authored-by\s*:|🤖|generated (with|by) \[?(claude|chatgpt|copilot|codex|cursor|gemini|openai|anthropic|an? ai\b|ai\b))'
+        args: [--ignore-case]
+        stages: [commit-msg]

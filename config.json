@@ -1,0 +1,21 @@
+{
+  "source": {
+    "system": "disk",
+    "path": "/data/landing/votacoes",
+    "format": "csv",
+    "watermark_pattern": "votacoes_(\\d{10})\\.csv",
+    "schema": "id STRING, uri STRING, data DATE, data_hora_registro TIMESTAMP, id_orgao BIGINT, uri_orgao STRING, sigla_orgao STRING, id_evento BIGINT, uri_evento STRING, aprovacao INT, votos_sim INT, votos_nao INT, votos_outros INT, descricao STRING, ultima_abertura_votacao_data_hora_registro TIMESTAMP, ultima_abertura_votacao_descricao STRING, ultima_apresentacao_proposicao_data_hora_registro TIMESTAMP, ultima_apresentacao_proposicao_descricao STRING, ultima_apresentacao_proposicao_id_proposicao BIGINT, ultima_apresentacao_proposicao_uri_proposicao STRING",
+    "options": {
+      "header": true,
+      "sep": ";",
+      "quote": "\"",
+      "escape": "\"",
+      "multiLine": true,
+      "encoding": "UTF-8",
+      "enforceSchema": false,
+      "mode": "FAILFAST",
+      "timeZone": "America/Sao_Paulo"
+    }
+  },
+  "target": {"system": "postgres", "table_name": "camara.votacoes"}
+}
