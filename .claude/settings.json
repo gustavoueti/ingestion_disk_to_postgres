@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "claudeMdExcludes": [
+    "**/ingestio_examples/CLAUDE.md",
+    "**/ingestio_examples/CLAUDE.local.md",
+    "**/ingestio_examples/AGENTS.md",
+    "**/ingestio_examples/.claude/CLAUDE.md"
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git diff *)",
+      "Bash(git status *)",
+      "Bash(git blame *)",
+      "Bash(git shortlog *)",
+      "Bash(git ls-files *)",
+      "Bash(git ls-tree *)",
+      "Bash(git rev-parse *)",
+      "Bash(git describe *)",
+      "Bash(git for-each-ref *)",
+      "Bash(git branch --show-current)",
+      "Bash(git -C * log *)",
+      "Bash(git -C * show *)",
+      "Bash(git -C * diff *)",
+      "Bash(git -C * status *)",
+      "Bash(git -C * ls-files *)",
+      "Bash(git -C * ls-tree *)",
+      "Bash(git -C * rev-parse *)",
+      "Bash(git -C * describe *)",
+      "Bash(git -C * for-each-ref *)",
+      "Bash(git -C * grep *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh run view *)",
+      "Bash(gh run list *)",
+      "Bash(gh repo view *)",
+      "Bash(uv run --locked ruff check *)",
+      "Bash(uv run --locked ruff format --check *)",
+      "Bash(uv run --locked mypy *)",
+      "Bash(uv run --locked pytest *)"
+    ],
+    "deny": [
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(git fetch *)",
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(git reset *)",
+      "Bash(git revert *)",
+      "Bash(git cherry-pick *)",
+      "Bash(git tag *)",
+      "Bash(git stash *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git restore *)",
+      "Bash(git rm *)",
+      "Bash(git mv *)",
+      "Bash(git branch -d *)",
+      "Bash(git branch -D *)",
+      "Bash(git branch -m *)",
+      "Bash(git branch -M *)",
+      "Bash(git branch --delete *)",
+      "Bash(git worktree *)",
+      "Bash(git init *)",
+      "Bash(git clone *)",
+      "Bash(git remote *)",
+      "Bash(git config *)",
+      "Bash(git -C * add *)",
+      "Bash(git -C * commit *)",
+      "Bash(git -C * push *)",
+      "Bash(git -C * pull *)",
+      "Bash(git -C * fetch *)",
+      "Bash(git -C * merge *)",
+      "Bash(git -C * rebase *)",
+      "Bash(git -C * reset *)",
+      "Bash(git -C * revert *)",
+      "Bash(git -C * tag *)",
+      "Bash(git -C * checkout *)",
+      "Bash(git -C * switch *)",
+      "Bash(git -C * restore *)",
+      "Bash(git -C * init *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr edit *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr close *)",
+      "Bash(gh pr reopen *)",
+      "Bash(gh pr comment *)",
+      "Bash(gh pr review *)",
+      "Bash(gh pr ready *)",
+      "Bash(gh pr checkout *)",
+      "Bash(gh repo create *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh repo edit *)",
+      "Bash(gh repo fork *)",
+      "Bash(gh repo rename *)",
+      "Bash(gh repo clone *)",
+      "Bash(gh release create *)",
+      "Bash(gh release edit *)",
+      "Bash(gh release delete *)",
+      "Bash(gh release upload *)",
+      "Agent(isolation:worktree)",
+      "EnterWorktree"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Monitor|Agent|EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_git_writes.py"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

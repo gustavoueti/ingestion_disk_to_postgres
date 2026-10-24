@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # A job whose tests need more than Python, such as Java for Spark or a database in a service
+    # container, adds it here. The four checks below stay as they are.
+    #
+    # The PostgreSQL the job writes to, in a service container: the same image and settings as
+    # the job's docker compose file. Its user and password exist only inside this throwaway
+    # container. The service starts before the checkout, so it cannot load the job's DDL from
+    # the repository: the job or its tests create the table.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    # Where the job and its tests reach that PostgreSQL: libpq's standard variables.
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v5
+
+      # Java for Spark: the pyspark in uv.lock runs on Java 17 or 21. The pgJDBC driver is not
+      # installed here: the job's Spark session fetches it from Maven Central.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version-file: .python-version
+
+      # --locked fails when uv.lock is out of date, instead of silently resolving
+      # something different from what a developer has locally.
+      - run: uv sync --locked
+
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+      # Until its first spec is tested, the job holds no Python file of its own: mypy refuses to
+      # run without one, and pytest exits with 5 when it collects no test. Any other failure
+      # fails the build.
+      - run: |
+          if [ -n "$(git ls-files '*.py' ':!:.claude/')" ]; then uv run --locked mypy; fi
+      - run: uv run --locked pytest -q || test $? -eq 5
+
+  pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      # Merges are squashed, so the PR title becomes the commit message on main.
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            build
+            ci
+            chore
+            revert
