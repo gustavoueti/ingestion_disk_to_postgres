@@ -7,17 +7,63 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from ingestio import AppendOnly, Process, ReadSource, Step, log_to_console
+from ingestio import (
+    AppendOnly,
+    Callback,
+    CancelStepException,
+    Process,
+    ReadSource,
+    Step,
+    log_to_console,
+)
 from ingestio.connector.all import PostgresConnection
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, functions
 
 import warehouse
-from callbacks import SkipEmptyBatch, StampSourceFile
 
 # One place for the version of the driver: the job and its tests share it.
 PGJDBC_VERSION = "42.7.14"
 
 _CONFIG = Path(__file__).with_name("config.json")
+
+
+class SkipEmptyBatch(Callback):
+    """Ends the load step when the batch has no row, so that nothing after it in the step runs.
+
+    A run with nothing new is a normal run. The check comes before `StampSourceFile` because an
+    empty selection has no `_metadata` column.
+
+    Args:
+        key: the key of the state that holds the DataFrame.
+    """
+
+    def __init__(self, *, key: str = "records") -> None:
+        self.key = key
+
+    def run(self) -> None:
+        if self.process.state[self.key].isEmpty():  # a Spark action: it reads the files
+            raise CancelStepException("no new row")
+
+
+class StampSourceFile(Callback):
+    """Adds the column `source_file`: the name of the file each row came from.
+
+    The column is the job's watermark, kept in the target's own rows, so it commits with them.
+
+    Args:
+        key: the key of the state that holds the DataFrame.
+        column: the name of the column to add.
+    """
+
+    def __init__(self, *, key: str = "records", column: str = "source_file") -> None:
+        self.key = key
+        self.column = column
+
+    def run(self) -> None:
+        records = self.process.state[self.key]
+        self.process.state[self.key] = records.withColumn(
+            self.column, functions.col("_metadata.file_name")
+        )
 
 
 def build_spark_session(*, master: str = "local[*]") -> SparkSession:

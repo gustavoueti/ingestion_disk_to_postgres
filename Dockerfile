@@ -23,5 +23,8 @@ WORKDIR /app
 COPY .python-version pyproject.toml uv.lock ./
 RUN uv sync --locked --no-install-project
 
-COPY main.py config.json callbacks.py warehouse.py prepare_landing.py ./
+# The job's code, as the repository lays it out: the job in src/, the preparation script in
+# scripts/. They run as `python src/main.py` and `python scripts/prepare_landing.py` from /app.
+COPY src/ ./src/
+COPY scripts/ ./scripts/
 RUN chown -R 1000:1000 /app

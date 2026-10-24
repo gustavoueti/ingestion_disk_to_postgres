@@ -21,7 +21,7 @@ Pages that document the job's processes, written by the documenter.
 
 | Page | Covers |
 |---|---|
-| [camara_hourly_ingestion.md](camara_hourly_ingestion.md) | The hourly CSV files of the Câmara dos Deputados, from a landing directory to `camara.votacoes` in PostgreSQL: dataset, landing, preparation script, configuration, run, failures, tests. |
+| [camara_hourly_ingestion.md](camara_hourly_ingestion.md) | The hourly CSV files of the Câmara dos Deputados, from a landing directory to `camara.votacoes` in PostgreSQL: layout of the job (`src/`, `scripts/`), dataset, landing, preparation script, configuration, run, failures, tests. |
 
 ## Specs
 

@@ -1,6 +1,7 @@
 # Hourly CSV files of the Câmara dos Deputados, from a landing directory to PostgreSQL
 
-The job's first process, version `0.2.0`. Spec:
+The job's first process, version `0.3.0` (`0.2.0` was its first release; `0.3.0` moved the
+files into `src/` and `scripts/` and changed the commands, with the same behaviour). Spec:
 [camara_hourly_ingestion](../specs/camara_hourly_ingestion.md). The README has the commands that
 bring the environment up and run it; this page describes what the process ingests, how it is
 configured, what it writes, and how it fails.
@@ -15,8 +16,25 @@ table `camara.votacoes`, in one transaction. A run with nothing new is a normal 
 nothing.
 
 ```text
-Câmara's yearly files --prepare_landing.py--> landing directory --main.py--> camara.votacoes
+Câmara's yearly files --scripts/prepare_landing.py--> landing directory --src/main.py--> camara.votacoes
 ```
+
+## The layout of the job
+
+| In the repository | In the `spark` image | What it is |
+|---|---|---|
+| `src/main.py` | `/app/src/main.py` | the entry point; it defines the job's own callbacks, `SkipEmptyBatch` and `StampSourceFile` |
+| `src/config.json` | `/app/src/config.json` | the job's configuration, which `src/main.py` reads from the directory it sits in |
+| `src/warehouse.py` | `/app/src/warehouse.py` | the job's helper: the values it reads from the configuration, the DDL and the watermark query |
+| `scripts/prepare_landing.py` | `/app/scripts/prepare_landing.py` | the preparation script, not part of the ingestio job |
+| `pyproject.toml`, `uv.lock`, `.python-version` | `/app/` | the job's environment, which the image builds with `uv sync --locked` |
+| `data/` | `/data`, a bind mount | the landing, never committed |
+
+There is no `callbacks.py`, and the root of the repository holds none of `main.py`,
+`config.json`, `warehouse.py` and `prepare_landing.py`. `src/` and `scripts/` are plain
+directories, not packages: the files are run as scripts, `python src/main.py` and
+`python scripts/prepare_landing.py`, from `/app` in the `spark` service or from the repository's
+root on the host.
 
 ## The dataset
 
@@ -57,7 +75,7 @@ Câmara's yearly files --prepare_landing.py--> landing directory --main.py--> ca
 | Service | What it is |
 |---|---|
 | `postgres` | PostgreSQL 17 (`postgres:17`), user, password and database `postgres`, port 5432 published on 5432, with a health check (`pg_isready -U postgres`). It has no volume of its own: its data lives as long as its container. |
-| `spark` | The job's image (Java 17, Python 3.12, the environment of `uv.lock`). It waits for `postgres` to be healthy, mounts the repository's `data` directory at `/data`, runs as uid and gid 1000, and stays up. The preparation script and the job run inside it with `docker compose exec`. Spark runs in local mode. |
+| `spark` | The job's image (Java 17, Python 3.12, the environment of `uv.lock`), with `/app` as its working directory and `src/` and `scripts/` under it. It waits for `postgres` to be healthy, mounts the repository's `data` directory at `/data`, runs as uid and gid 1000, and stays up. The preparation script and the job run inside it with `docker compose exec spark python scripts/prepare_landing.py ...` and `docker compose exec spark python src/main.py`. Spark runs in local mode. |
 
 The `spark` service reaches the database through libpq's variables: `PGHOST=postgres`,
 `PGPORT=5432`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` all `postgres`. The user and password
@@ -86,8 +104,11 @@ The names carry the hour, fixed-width and most significant first, so they order 
 ## The preparation script
 
 ```text
-python prepare_landing.py --landing DIR --start YYYY-MM-DDTHH --end YYYY-MM-DDTHH [--base-url URL]
+python scripts/prepare_landing.py --landing DIR --start YYYY-MM-DDTHH --end YYYY-MM-DDTHH [--base-url URL]
 ```
+
+It is run from the directory that holds `scripts/`: `/app` in the `spark` service, the
+repository's root on the host.
 
 | Argument | Required | What it is |
 |---|---|---|
@@ -134,11 +155,11 @@ files, and somewhat fewer rows than the 24,200 of the two yearly files (counts o
 
 ## The process
 
-`main.py` runs one process of two steps:
+`src/main.py` runs one process of two steps:
 
 | Step | Callbacks |
 |---|---|
-| `extract` | `ReadSource` reads the `source` section of `config.json` and stores the DataFrame of the selected files in the state |
+| `extract` | `ReadSource` reads the `source` section of `src/config.json` and stores the DataFrame of the selected files in the state |
 | `load` | `SkipEmptyBatch` ends the step when the batch has no row; `StampSourceFile` adds the column `source_file`, the name of the file each row came from; `AppendOnly` appends the batch to the `target` section's table, in one transaction |
 
 Around the process, the job's own code, before it is built:
@@ -148,7 +169,7 @@ Around the process, the job's own code, before it is built:
 3. Applies the DDL of the target.
 4. Reads the watermark from the target.
 
-### `config.json`
+### `src/config.json`
 
 | Key | Meaning |
 |---|---|
